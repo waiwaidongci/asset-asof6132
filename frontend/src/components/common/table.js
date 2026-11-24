@@ -1,7 +1,7 @@
 import {button, el, p} from '../../utils/dom.js';
 import {value} from '../../utils/format.js';
 
-export function table(columns, rows, {caption, empty = '暂无记录', pageSize = 12} = {}) {
+export function table(columns, rows, {caption, empty = '暂无记录', pageSize = 12, rowClass} = {}) {
   if (!rows.length) return p(empty, 'empty');
   const body = el('tbody');
   const grid = el('table', {}, caption && el('caption', {class:'sr'}, caption),
@@ -12,8 +12,9 @@ export function table(columns, rows, {caption, empty = '暂无记录', pageSize 
   const next = button('下一页', {class:'quiet', onClick: () => { offset += pageSize; paint(); }});
   function paint() {
     const end = Math.min(rows.length, offset + pageSize);
-    body.replaceChildren(...rows.slice(offset, end).map(row =>
-      el('tr', {}, columns.map(col => el('td', {}, col.render ? col.render(row) : value(row[col.key]))))));
+    body.replaceChildren(...rows.slice(offset, end).map((row, index) =>
+      el('tr', {class: typeof rowClass === 'function' ? rowClass(row, offset + index) : undefined},
+        columns.map(col => el('td', {}, col.render ? col.render(row) : value(row[col.key]))))));
     count.textContent = `${offset + 1}–${end} / ${rows.length}`;
     prev.disabled = offset === 0;
     next.disabled = end === rows.length;

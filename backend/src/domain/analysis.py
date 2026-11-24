@@ -3,8 +3,9 @@
 from calendar import monthrange
 from collections import Counter
 from dataclasses import asdict, dataclass
-from datetime import date, timedelta
+from datetime import timedelta
 
+from . import survival
 from .spec import SPEC
 
 
@@ -16,7 +17,6 @@ _TRANSITIONS = {
 }
 _STATUS_LABELS = {None: "未接收", "in_custody": "在管", "checked_out": "借出", "retired": "退役"}
 _EVENT_LABELS = {"accept": "接收", "check-out": "借出", "check-in": "归还", "retire": "退役"}
-_FIELD_BY_KEY = {field["key"]: field for field in SPEC["fields"]}
 _PARAM_DEFAULTS = {field["key"]: field["default"] for field in SPEC["params"]}
 _BALANCE_COLUMNS = (
     ("start_date", "统计首日"), ("as_of_date", "截止日"), ("close_type", "快照类型"),
@@ -35,80 +35,24 @@ _ASSET_COLUMNS = (
 
 
 @dataclass(frozen=True)
-class _Event:
-    event_id: str
-    asset_id: str
-    asset_name: str | None
-    event_date: date
-    sequence: int
-    event_type: str
-
-
-@dataclass(frozen=True)
 class _Asset:
     name: str
     status: str
-    last_event: _Event
+    last_event: survival._Event
 
 
 def _day(value, label):
-    try:
-        return date.fromisoformat(value)
-    except (TypeError, ValueError):
-        raise ValueError(f"{label}须为有效日期。") from None
-
-
-def _event_text(row, key, index, *, required=True):
-    field = _FIELD_BY_KEY[key]
-    raw = row.get(key)
-    if raw is None and not required:
-        return None
-    if isinstance(raw, str):
-        value = raw.strip()
-        if not value and not required:
-            return None
-        if value and len(value) <= field["max_length"]:
-            return value
-    raise ValueError(f"第 {index} 行的{field['label']}须为 1 至 {field['max_length']} 个字符。")
+    return survival._day(value, label)
 
 
 def _ordered_events(rows):
-    if not isinstance(rows, (list, tuple)) or not rows:
-        raise ValueError("交接明细为空，请导入至少一条生命周期事件。")
-    by_id = {}
-    by_slot = {}
-    sequence_field = _FIELD_BY_KEY["sequence"]
-    for index, row in enumerate(rows, 1):
-        if not isinstance(row, dict):
-            raise ValueError(f"第 {index} 行交接事件格式有误。")
-        kind = row.get("event_type")
-        if kind not in _FIELD_BY_KEY["event_type"]["options"]:
-            raise ValueError(f"第 {index} 行事件类型无效，须为 accept、check-out、check-in 或 retire。")
-        sequence = row.get("sequence")
-        if type(sequence) is not int or not sequence_field["min"] <= sequence <= sequence_field["max"]:
-            raise ValueError(f"第 {index} 行顺序号须为 1 至 {sequence_field['max']} 的整数。")
-        event = _Event(
-            _event_text(row, "event_id", index), _event_text(row, "asset_id", index),
-            _event_text(row, "asset_name", index, required=kind == "accept"),
-            _day(row.get("event_date"), f"第 {index} 行交接日期"), sequence, kind,
-        )
-        previous = by_id.get(event.event_id)
-        if previous == event:
-            continue
-        if previous is not None:
-            raise ValueError(f"事件编号 {event.event_id} 的内容冲突，请核对原始交接单。")
-        slot = (event.asset_id, event.event_date, event.sequence)
-        if slot in by_slot:
-            raise ValueError(f"工具 {event.asset_id} 在 {event.event_date} 的顺序号 {sequence} 重复"
-                             f"（{by_slot[slot]}、{event.event_id}）。")
-        by_slot[slot] = event.event_id
-        by_id[event.event_id] = event
-    return sorted(by_id.values(), key=lambda event: (event.event_date, event.asset_id, event.sequence))
+    return survival._ordered_events(rows)
 
 
 def validate_rows(rows):
     """校验事件格式与重放键，返回去重后的规范事件；状态由盘点截止日决定。"""
-    return [dict(asdict(event), event_date=event.event_date.isoformat()) for event in _ordered_events(rows)]
+    return [dict(asdict(event), event_date=event.event_date.isoformat())
+            for event in survival._ordered_events(rows)]
 
 
 class _Ledger:
@@ -208,6 +152,7 @@ def analyze(rows, normalized_params):
     ]
     reconciled = all(row[key] == 0 for row in [period, *monthly]
                      for key in ("active_difference", "custody_difference", "checked_out_difference"))
+    backtest = survival.backtest(rows, params)
     return {
         "state": "ok" if active and reconciled else "warning",
         "headline": f"截至 {cutoff}，有效工具 {active} 件，在管 {custody} 件，借出 {out} 件。",
@@ -223,6 +168,7 @@ def analyze(rows, normalized_params):
             _table("区间期初期末勾稽", _BALANCE_COLUMNS, [period]),
             _table("月末与截止日勾稽", _BALANCE_COLUMNS, monthly),
             _table("期末资产快照", _ASSET_COLUMNS, assets),
+            *backtest["tables"],
         ],
         "charts": [
             {"title": title, "kind": "line",
@@ -232,5 +178,7 @@ def analyze(rows, normalized_params):
         "sections": [{"title": "勾稽与盘点复核", "text": (
             ("各期有效、在管及借出数量的勾稽差额均为 0。" if reconciled else "存在勾稽差额，请核对交接事件。")
             + "逐月期末存量与比率按截止日取值。复核时可从期末资产快照定位末笔交接单。"
-        )}],
+        )}, *backtest["sections"]],
+        "backtest": {key: value for key, value in backtest.items()
+                     if key not in ("tables", "sections")},
     }

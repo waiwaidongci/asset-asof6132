@@ -8,6 +8,37 @@ import {workspace} from '../stores/workspace.js';
 import {button, el, h, link, p} from '../utils/dom.js';
 import {date, value} from '../utils/format.js';
 
+const OUTCOME_STATE = {'已归还':'complete', '未归还':'failed', '待观察':'queued'};
+
+function outcomePill(text) {
+  return pill(text, OUTCOME_STATE[text] || 'queued');
+}
+
+function backtestColumns(columns) {
+  return columns.map(col => {
+    if (col.key === 'actual_outcome') {
+      return {...col, render: row => outcomePill(row.actual_outcome)};
+    }
+    if (col.key === 'return_prob_7d_pct') {
+      return {...col, render: row => row.return_prob_7d_pct === null
+        ? el('span', {class:'muted', title:row.probability_note}, '不出概率') : value(row.return_prob_7d_pct)};
+    }
+    if (col.key === 'probability_note') {
+      return {...col, render: row => row.probability_note ? el('span', {class:'muted'}, row.probability_note) : '—'};
+    }
+    return col;
+  });
+}
+
+function resultTable(item) {
+  const isBacktest = item.title.includes('回测') || item.title.startsWith('生命表');
+  return panel(item.title, table(backtestColumns(item.columns), item.rows, {
+    caption: item.title, pageSize: isBacktest ? 20 : 12,
+    rowClass: item.title.includes('回测') && item.columns.some(col => col.key === 'actual_outcome')
+      ? row => `outcome-${row.observation_status === '待观察' ? 'pending' : 'observed'}` : undefined,
+  }));
+}
+
 export async function results(route, refresh) {
   const {spec,runs,datasets} = workspace;
   const id = route.id || runs[0]?.id;
@@ -37,7 +68,7 @@ export async function results(route, refresh) {
     metrics(result.metrics),
     result.charts.map(plot),
     (result.sections || []).map(item=>panel(item.title,p(item.text))),
-    result.tables.map(item=>panel(item.title,table(item.columns,item.rows,{caption:item.title}))))
+    result.tables.map(resultTable)))
     : panel(job.name,pill(STATUS[job.status],job.status),p(job.error,'feedback'),link('返回调整参数',`#run/${job.dataset_id}`,{class:'quiet'}));
   const inputs = spec.params.map(param=>el('div',{},el('dt',{},param.label),el('dd',{},value(job.params[param.key]))));
   return el('div',{},el('div',{class:'two-col'},el('div',{class:'wide-panel'},analysis),

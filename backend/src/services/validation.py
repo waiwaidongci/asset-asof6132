@@ -76,4 +76,10 @@ def normalize_params(params):
     fields = SPEC['params']
     if set(params) - {field['key'] for field in fields}:
         raise ValueError('存在未知运行参数，请重新打开工作面板')
-    return {field['key']: cell(field, params.get(field['key'], field['default'])) for field in fields}
+    normalized = {}
+    for field in fields:
+        value = cell(field, params.get(field['key'], field['default']))
+        if value is None and 'default' in field:
+            value = field['default']
+        normalized[field['key']] = value
+    return normalized
